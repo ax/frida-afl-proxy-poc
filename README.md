@@ -15,6 +15,7 @@ frida-afl-proxy.js should be modified to fit the needs of the target, you have t
 `module_start` and `module_end` are used to limit the stalker tracing (mandatory?) and `base` is the address of the function that 
 Frida will instrument and gather coverage from.
 
+- Run `getfrida.sh`
 - Compile the fafl-poc `make fafl-poc`
 - Compile the vuln-tcp-server `make vuln-tcp-server`
 - Compile just afl-fuzz
