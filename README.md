@@ -22,7 +22,7 @@ Frida will instrument and gather coverage from.
 - Run the frida server `./frida-server-16.5.6-linux-x86_64`
 - `mkdir in; echo "CIAO" > in/1`
 - `touch crashshmfile` `touch shmfile`
-- Then `fafl-net` can be run and it should find the infamous vuln-tcp-server crash in a matter of time:
+- Then `fafl-poc` can be run and it should find the infamous vuln-tcp-server crash in a matter of time:
 
 ```
 AFL_SKIP_BIN_CHECK=1 AFL_DEBUG=1 /home/ax/AFLplusplus/afl-fuzz -t 100000 -m 2048 -i ./in -o ./out -- ./fafl-poc 127.0.0.1:27042 $(pidof vuln-tcp-server) fafl-poc.js
