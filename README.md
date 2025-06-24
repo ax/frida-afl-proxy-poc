@@ -10,6 +10,7 @@ frida-afl-proxy can be used to fuzz network servers with AFL++. frida-afl-proxy,
 - The frida-afl-proxy.js script attach the frida interceptor to the target function. onEnter the frida Staker will follow the current thread id for coverage collection.
 - afl-fuzz writes its mutated payloads to frida-afl-proxy that repeatedly connects, sends the payload, and close the socket.
 - During the execution and processing of the input, the target will, due to the injected code, gather coverage info and write it to AFL++'s coverage bitmap in the AFL++'s shared memory.
+
 ## Run frida-afl-proxy against vuln-tcp-server
 frida-afl-proxy.js should be modified to fit the needs of the target, you have to setup `module_start`, `module_end` and `base`.
 `module_start` and `module_end` are used to limit the stalker tracing (mandatory?) and `base` is the address of the function that 

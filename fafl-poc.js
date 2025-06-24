@@ -1,4 +1,4 @@
-const shm_id = 0xf;const sem_shm_id=0x2;const crash_shm_id=0x3;
+const shm_id = 0x39;const sem_shm_id=0x8;const crash_shm_id=0x9;
 function open_shm(id, size) {
     const shmat_addr = Module.getExportByName(null, "shmat");
     //console.log("[-] shmat address: "+shmat_addr);
@@ -13,7 +13,9 @@ let pc = undefined;
 
 if (Process.arch == "x64") {
   pc = "rip";
-} 
+} else {
+  console.log("[!] Unknown architecture!", Process.arch);
+}
 
 var stalker_instrumentation = new CModule(`
 #include <gum/gumstalker.h>
@@ -29,6 +31,7 @@ struct _user_data {
     uintptr_t module_end;
     uintptr_t base;
     uintptr_t prev_loc;
+    uint8_t coverage;
   };
 
 
@@ -37,9 +40,8 @@ bool is_within_module(uintptr_t pc, uintptr_t s, uintptr_t e) {
 }
 
 
-static void afl_map_fill (GumCpuContext * cpu_context, gpointer user_data) {
+static void afl_map_fill(GumCpuContext * cpu_context, gpointer user_data) {
     struct _user_data *ud = (struct _user_data*)user_data;
-
     uintptr_t cur_loc = cpu_context->${pc} - ud->base;
     uint8_t * afl_area_ptr = ud->afl_area_ptr;
 
@@ -49,24 +51,22 @@ static void afl_map_fill (GumCpuContext * cpu_context, gpointer user_data) {
     ud->prev_loc = cur_loc >> 1;
 }
 
+
+
 void transform(GumStalkerIterator *iterator, GumStalkerOutput *output, gpointer user_data) {
     cs_insn *insn;
     struct _user_data *ud = (struct _user_data *)user_data;
+    gpointer block_start = NULL;
 
-    // Process the first instruction to determine block validity
-    if (gum_stalker_iterator_next(iterator, &insn)) {
-        if (is_within_module((uintptr_t)insn->address, ud->module_start, ud->module_end)) {
-            // Insert callout once per block
-            gum_stalker_iterator_put_callout(iterator, afl_map_fill, user_data, NULL);
+    while (gum_stalker_iterator_next(iterator, &insn)) {
+        if (is_within_module((uintptr_t)insn->address, ud->module_start, ud->module_end) && (ud->coverage == 1)) {
+            // Check if this is the first instruction in the block
+            if (block_start == NULL) {
+                block_start = (gpointer)insn->address;
+                gum_stalker_iterator_put_callout(iterator, afl_map_fill, user_data, NULL);
+            }
         }
-
-        // Keep the first instruction
         gum_stalker_iterator_keep(iterator);
-
-        // Keep remaining instructions without re-checking the module
-        while (gum_stalker_iterator_next(iterator, &insn)) {
-            gum_stalker_iterator_keep(iterator);
-        }
     }
 }
 
@@ -81,14 +81,25 @@ var target_fun_addr;
 var base;
 var range_base;
 var range_base_end;
-const _user_data = Memory.alloc(40);
+//const _user_data = Memory.alloc(40);
+const _user_data = Memory.alloc(41);
 
-
+console.log("Module Name: "+moduleName);
+console.log("Enumerating symbols...");
 Module.enumerateSymbols(moduleName, {
     onMatch: function(symbol) {
+        console.log("---> Symbol: " + symbol.name + " - Address: " + symbol.address);
         //if(symbol.name === "vuln"){
-        if(symbol.name === "tcp_request"){ // dnsmasq 
-            console.log("FOUND! Symbol: " + symbol.name + " - Address: " + symbol.address);
+        //if(symbol.name === "http_request_parse"){ // CVE-2015-3294
+        //if(symbol.name === "tcp_request"){ // CVE-2015-3294
+        //if(symbol.name === "dlt_daemon_process_client_connect"){ 
+       // if(symbol.name === "do_tcp_connection"){
+	    //if(symbol.name === "dhcp_packet"){ //dnsmasqdhcp
+	    if(symbol.name === "udhcp_recv_kernel_packet"){ 
+	   // if(symbol.name === "udhcp_add_binary_option"){ 
+        //if(symbol.name === "recv_dhcp_packet"){
+	    //if(symbol.name === "receive_query"){
+        console.log("FOUND! Symbol: " + symbol.name + " - Address: " + symbol.address);
         target_fun_addr=symbol.address;
         }
     },
@@ -112,33 +123,33 @@ Process.enumerateRanges('r-x').forEach(function(range) {
     }
 });
 
-
 var afl_area_ptr = open_shm(shm_id, 65536)
+
 _user_data.writePointer(afl_area_ptr);
 _user_data.add(8).writePointer(range_base);
 _user_data.add(16).writePointer(range_base_end);
 _user_data.add(24).writePointer(base);
-_user_data.add(32).writeInt(0);
-
+//_user_data.add(32).writeInt(0);
+_user_data.add(32).writeU64(0);
+_user_data.add(40).writeU8(0);
 
 var sem_shm = open_shm(sem_shm_id,256);
 var crash_shm = open_shm(crash_shm_id,32);
 
+console.log("HERE");
 const stalkerOptions = {
-    transform: stalker_instrumentation.transform,
-    data: _user_data,
-    events: {
-        call: false,
-        ret: false,
-        exec: false,
-        block: false,
-        compile: false
-    },
-    cache: true,
-    maxCacheSize: 10000,   
-    optimizeInstrumentation: true
-};
-
+        transform: stalker_instrumentation.transform,
+        data: _user_data,
+        events: {
+            call: false,
+            ret: false,
+            exec: false,
+            block: false,
+            compile: false
+        },
+        recyclePool: true,
+        trustThreshold: 0
+    };
 
 Process.setExceptionHandler(function (details) {
         Memory.writeU32(crash_shm, 0x0b);
@@ -149,41 +160,29 @@ Process.setExceptionHandler(function (details) {
         return false;
     });
 
-
 var followedThreads = new Set();
+//let hitCount = 0 ;
 
 Interceptor.attach(target_fun_addr, {
-    onEnter: function(args) {
-        var threadId = Process.getCurrentThreadId(); 
+	onEnter: function(args) {
+		_user_data.add(32).writeU64(0);
+		_user_data.add(40).writeU8(1);
+   		// hitCount++;
 		//console.log(`[*] Interceptor onEnter (${Date.now()}) - Thread: ${threadId}`);
 		//Stalker.follow(Process.getCurrentThreadId(), stalkerOptions);
-        var threadId = Process.getCurrentThreadId();
-        if (!followedThreads.has(threadId)) {  // Check if we're already following
-            Stalker.follow(threadId, stalkerOptions);
-            followedThreads.add(threadId);  // Mark this thread as being followed
-        }
-    },
-    onLeave: function(retval) {
-     	//Stalker.unfollow();
+		var threadId = Process.getCurrentThreadId();
+		if (!followedThreads.has(threadId)) {  
+			Stalker.follow(Process.getCurrentThreadId(), stalkerOptions);
+	   		followedThreads.add(threadId);
+		}
+	},
+	onLeave: function(retval) {
+	  //Stalker.unfollow(Process.getCurrentThreadId());
+  //     Stalker.invalidate(Process.getCurrentThreadId(),target_fun_addr);
+		_user_data.add(40).writeU8(0);
 		Stalker.flush(); 
-        //Stalker.garbageCollect();
-
-        var threadId = Process.getCurrentThreadId();
-		//if (followedThreads.has(threadId)) {
-     	//       Stalker.unfollow();
-    	//        Stalker.flush();  // Ensure events are processed
-     	//       followedThreads.delete(threadId);  // Remove from tracking
-     	//   }
-
-		//if (Math.random() < 0.1) {  // 10% prob
-      		//Stalker.garbageCollect();
-      	//}
-        // signal the reader that the function has been executed
-        // the reader shall check, send status
-        //releasing semaphore
-        //var currentValue = Memory.readU32(crash_shm);
-        //console.log("Current value in shared memory:", currentValue);
-        //Memory.writeU32(crash_shm, 0x0b);
-        sem_post(sem_shm);
-    }
+		Stalker.garbageCollect();
+		sem_post(sem_shm);
+	}
 });
+

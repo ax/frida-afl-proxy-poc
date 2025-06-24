@@ -39,6 +39,11 @@
 #include <sys/shm.h>
 #include <semaphore.h>
 
+#include <netinet/tcp.h>
+
+#include<time.h>
+
+
 #define SLEEP_MICROS 1000 
 
 //u32 global_status=0x00;
@@ -218,6 +223,56 @@ void replace_first_line(const char *filename, const char *new_line) {
     fclose(file);
 }
 
+int send_tcp6_test_case_to_target(uint8_t* buf, uint32_t len, const char* server_ip, uint16_t server_port) {
+    int status = 0;
+    struct sockaddr_in6 server_addr;
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin6_family = AF_INET6;
+    server_addr.sin6_port = htons(server_port);
+
+    // Handle IPv6 loopback explicitly
+    if (inet_pton(AF_INET6, server_ip, &server_addr.sin6_addr) <= 0) {
+        if (strcmp(server_ip, "::1") == 0) {
+            inet_pton(AF_INET6, "::1", &server_addr.sin6_addr); // Force loopback
+        } else {
+            perror("Invalid IPv6 address");
+            return -1;
+        }
+    }
+
+    // For link-local addresses you would add scope ID here, but not needed for ::1
+    // server_addr.sin6_scope_id = if_nametoindex("eth0");
+
+    int sock = socket(AF_INET6, SOCK_STREAM, 0);
+    if (sock < 0) {
+        perror("Socket creation failed");
+        //usleep(SLEEP_MICROS);
+        return -1;
+    }
+    
+    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Connection failed");
+        close(sock);
+        //usleep(SLEEP_MICROS);
+        return -1;
+    }
+
+    if (send(sock, buf, len, 0) < 0) {
+        perror("Data send failed");
+        close(sock);
+        //usleep(SLEEP_MICROS);
+        return -1;
+    }
+
+    char bufff[1024];
+    while(recv(sock, bufff, sizeof(buf), MSG_DONTWAIT) > 0);
+
+   // usleep(SLEEP_MICROS);
+    close(sock);
+    return status;
+}
+
 int send_tcp_test_case_to_target(uint8_t* buf, uint32_t len, const char* server_ip, uint16_t server_port) {
     int status;
     struct sockaddr_in server_addr;
@@ -228,17 +283,49 @@ int send_tcp_test_case_to_target(uint8_t* buf, uint32_t len, const char* server_
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if(sock < 0){
         perror("Socket creation failed");
-        usleep(SLEEP_MICROS);
+        //usleep(SLEEP_MICROS);
     }
+
+   // setsockopt(sock, SOL_SOCKET, SO_LINGER, &(struct linger){1, 0}, sizeof(struct linger));
     if(connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0){
         close(sock);
-        usleep(SLEEP_MICROS);
+        //usleep(SLEEP_MICROS);
     }
     send(sock, buf, len, 0); 
+
+   char bufff[1024];
+   while(recv(sock, bufff, sizeof(buf), MSG_DONTWAIT) > 0);
+
+    //usleep(SLEEP_MICROS);
+
+
+   // shutdown(sock, SHUT_RDWR);
     close(sock);
-    usleep(SLEEP_MICROS);
     return status;
 }
+
+int send_udp_test_case_to_target(uint8_t* buf, uint32_t len, const char* server_ip, uint16_t server_port) {
+    int status = -1;
+    struct sockaddr_in server_addr;
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        perror("Socket creation failed");
+        return -1;
+    }
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(server_port);
+    server_addr.sin_addr.s_addr = inet_addr(server_ip);
+    if (sendto(sock, buf, len, 0, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Send failed");
+        close(sock);
+        return -2;
+    }
+    //usleep(SLEEP_MICROS);
+    close(sock);
+    status = 0;
+    return status;
+}
+
 
 
 int main(int argc, char *argv[]) {
@@ -288,7 +375,7 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
     // Initialize the semaphore in shm
-    if (sem_init(sem, 1, 1) == -1) {  // 1 for shared between processes, 1 for initial value
+    if (sem_init(sem, 1, 0) == -1) {  // 1 for shared between processes, 1 for initial value
         perror("sem_init failed");
         exit(1);
     }
@@ -403,15 +490,37 @@ int main(int argc, char *argv[]) {
     __afl_start_forkserver();
     
     while((len = __afl_next_testcase(buf, sizeof(buf))) > 0) {
-        if(len > 4){  
 
-            status=send_tcp_test_case_to_target(buf,len,"127.0.0.1",8080);
+//    static const uint8_t fixed_packet[] = {
+//       0x00, 0x31, 0xf1, 0xcf, 0x01, 0x20, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+//       0x00, 0x01, 0x04, 0x74, 0x65, 0x73, 0x74, 0x03, 0x63, 0x6f, 0x6d, 0x00,
+//       0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x29, 0x04, 0xd0, 0x00, 0x00, 0x00,
+//       0x00, 0x00, 0x0c, 0x00, 0x0a, 0x00, 0x08, 0xe2, 0xf3, 0x5a, 0xf3, 0x6c,
+//       0x8a, 0xef, 0xca
+//   };
+//   memcpy(buf, fixed_packet, sizeof(fixed_packet));
+//   len = sizeof(fixed_packet);
+
+        
+         memset(__afl_area_ptr, 0, MAP_SIZE);
+
+   //     if(len > 10){  
+	    
+            //status=send_tcp_test_case_to_target(buf,len,"127.0.0.1",3490);
+             //status=send_tcp_test_case_to_target(buf,len,"127.0.0.1",4343);
+            //status=send_tcp_test_case_to_target(buf,len,"127.0.0.1",8080);
+	    //status=send_tcp6_test_case_to_target(buf, len, "::1", 4343);
+            status=send_udp_test_case_to_target(buf,len,"192.168.187.139",67);
+            //status=send_udp_test_case_to_target(buf,len,"127.0.0.1",67);
             //printf("Waiting on semaphore...\n");
+
             if (sem_wait(sem) == -1) {
                 perror("sem_wait failed");
                 exit(1);
             }
-            usleep(SLEEP_MICROS);
+            //usleep(300*SLEEP_MICROS);
+
+
             //if (buf[0] == 0xff) __afl_area_ptr[1] = 1; else __afl_area_ptr[2] = 2;
             // CRASH DETECTED BY FRIDA Exception Handler
             if(*crash_flag !=0){
@@ -427,9 +536,12 @@ int main(int argc, char *argv[]) {
                 }
                 sleep(0.5); // we will shorlty die
             }
-        }
+     //   }
         /* report the test case is done and wait for the next */
+
         __afl_end_testcase(status);
+
+
     }//end WHILE
     // Cleanup
     g_object_unref(script);
